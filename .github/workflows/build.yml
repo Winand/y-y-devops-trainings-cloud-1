@@ -8,3 +8,22 @@ on:
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          # https://docs.github.com/en/actions/learn-github-actions/variables
+          registry: ${{ vars.REGISTRY }}
+          username: oauth
+          password: ${{ secrets.YA_OAUTH_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ vars.REGISTRY }}/${{ vars.YA_REGISTRY_ID }}/catgpt:latest
