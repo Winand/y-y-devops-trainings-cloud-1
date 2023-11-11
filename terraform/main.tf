@@ -8,10 +8,12 @@ terraform {
 }
 
 provider "yandex" {
-  service_account_key_file = "./tf_key.json"
+  service_account_key_file = "./authorized_key.json"
   folder_id                = local.folder_id
   zone                     = "ru-central1-a"
 }
+
+/* Конфигурация ресурсов */
 
 resource "yandex_vpc_network" "foo" {}
 
@@ -26,7 +28,7 @@ resource "yandex_container_registry" "registry1" {
 }
 
 locals {
-  folder_id = "<INSERT YOUR FOLDER ID>"
+  folder_id = "b1gg7oilke5p5k4b5oer"
   service-accounts = toset([
     "catgpt-sa",
   ])
@@ -46,18 +48,24 @@ resource "yandex_resourcemanager_folder_iam_member" "catgpt-roles" {
   role      = each.key
 }
 
+// https://cloud.yandex.com/en/docs/cos/tutorials/coi-with-terraform
 data "yandex_compute_image" "coi" {
   family = "container-optimized-image"
 }
+// https://terraform-provider.yandexcloud.net/Resources/compute_instance
 resource "yandex_compute_instance" "catgpt-1" {
-    platform_id        = "standard-v2"
+    // https://cloud.yandex.com/en/docs/compute/concepts/vm-platforms
+    platform_id        = "standard-v2"  // Intel Cascade Lake
     service_account_id = yandex_iam_service_account.service-accounts["catgpt-sa"].id
     resources {
       cores         = 2
-      memory        = 1
-      core_fraction = 5
+      memory        = 1 # Gb
+      // Гарантированная доля CPU: доля может временно повышаться, но не будет меньше
+      core_fraction = 5 # %
     }
     scheduling_policy {
+      // Прерываемая ВМ работает не более 24 часов и может быть автоматически
+      // остановлена. Все данные сохраняются, возможен перезапуск вручную.
       preemptible = true
     }
     network_interface {
@@ -73,7 +81,10 @@ resource "yandex_compute_instance" "catgpt-1" {
     }
     metadata = {
       docker-compose = file("${path.module}/docker-compose.yaml")
-      ssh-keys  = "ubuntu:${file("~/.ssh/devops_training.pub")}"
+      // Для доступа к ВМ через SSH сгенерируйте пару SSH-ключей и передайте
+      // публичную часть ключа на ВМ в параметре ssh-keys блока metadata.
+      // https://cloud.yandex.ru/docs/compute/operations/vm-connect/ssh#creating-ssh-keys
+      ssh-keys  = "ubuntu:${file("./ssh_key.pub")}"
     }
 }
 

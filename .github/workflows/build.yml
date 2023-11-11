@@ -1,3 +1,6 @@
+# See also:
+# - https://github.com/yc-actions/yc-coi-deploy
+
 name: Build and upload image
 
 # Controls when the workflow will run
