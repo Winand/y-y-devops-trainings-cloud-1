@@ -2,6 +2,16 @@ version: '3.7'
 services:
   catgpt:
     container_name: catgpt
-    image: "cr.yandex/<INSERT_YOUR_IMAGE_TAG_HERE>"
+    image: "cr.yandex/${registry_id}/catgpt:latest"
     restart: always
     network_mode: "host"
+  unifiedagent:  # для сбора метрик
+    container_name: unifiedagent
+    image: "cr.yandex/yc/unified-agent"
+    environment:
+      FOLDER_ID: "${folder_id}"
+    restart: always
+    network_mode: "host"
+    volumes:
+      # конфиг с описанием, откуда забирать метрики
+      - /ua:/etc/yandex/unified_agent/conf.d

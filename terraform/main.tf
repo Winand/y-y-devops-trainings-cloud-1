@@ -8,12 +8,16 @@ terraform {
 }
 
 provider "yandex" {
-  service_account_key_file = "./tf_key.json"
-  folder_id                = local.folder_id
+  service_account_key_file = "./authorized_key.json"
+  folder_id                = var.folder_id
   zone                     = "ru-central1-a"
 }
 
-resource "yandex_vpc_network" "foo" {}
+/* Конфигурация ресурсов */
+
+resource "yandex_vpc_network" "foo" {
+  // Requires 'vpc.privateAdmin' role https://cloud.yandex.ru/docs/vpc/security
+}
 
 resource "yandex_vpc_subnet" "foo" {
   zone           = "ru-central1-a"
@@ -25,43 +29,96 @@ resource "yandex_container_registry" "registry1" {
   name = "registry1"
 }
 
+variable "folder_id" {
+  type = string
+}
+
 locals {
-  folder_id = "<INSERT YOUR FOLDER ID>"
   service-accounts = toset([
-    "catgpt-sa",
+    "catgpt-sa", "catgpt-ig-sa"
   ])
   catgpt-sa-roles = toset([
     "container-registry.images.puller",
     "monitoring.editor",
   ])
+  catgpt-ig-sa-roles = toset([
+    "compute.editor",
+    "iam.serviceAccounts.user",
+    # "load-balancer.admin",
+    "vpc.publicAdmin",  // Permission denied to resource-manager.folder
+    "vpc.user", // "Permission to use subnet denied"
+    # "vpc.privateAdmin",
+  ])
 }
 resource "yandex_iam_service_account" "service-accounts" {
+  // Requires 'iam.serviceAccounts.admin' role https://cloud.yandex.ru/docs/iam/security
   for_each = local.service-accounts
-  name     = "${local.folder_id}-${each.key}"
+  name     = "${var.folder_id}-${each.key}"
+  // folder_id = defaults to provider folder_id
 }
 resource "yandex_resourcemanager_folder_iam_member" "catgpt-roles" {
+  // Requires 'resource-manager.admin' role https://cloud.yandex.ru/docs/resource-manager/security
   for_each  = local.catgpt-sa-roles
-  folder_id = local.folder_id
+  folder_id = var.folder_id
   member    = "serviceAccount:${yandex_iam_service_account.service-accounts["catgpt-sa"].id}"
   role      = each.key
 }
+resource "yandex_resourcemanager_folder_iam_member" "catgpt-ig-roles" {
+  for_each  = local.catgpt-ig-sa-roles
+  folder_id = var.folder_id
+  member    = "serviceAccount:${yandex_iam_service_account.service-accounts["catgpt-ig-sa"].id}"
+  role      = each.key
+}
 
+// https://cloud.yandex.com/en/docs/cos/tutorials/coi-with-terraform
 data "yandex_compute_image" "coi" {
   family = "container-optimized-image"
 }
-resource "yandex_compute_instance" "catgpt-1" {
-    platform_id        = "standard-v2"
+
+// https://cloud.yandex.com/en/docs/cos/tutorials/coi-with-terraform#creating-group
+resource "yandex_compute_instance_group" "catgpt" {
+  depends_on = [ yandex_resourcemanager_folder_iam_member.catgpt-ig-roles ]
+  folder_id = var.folder_id
+  // ID of the service account authorized for this instance = catgpt-sa
+  service_account_id = yandex_iam_service_account.service-accounts["catgpt-ig-sa"].id
+  scale_policy {
+    fixed_scale {
+      size = 2 // The number of instances in the instance group
+    }
+  }
+  deploy_policy {
+    // max num. of inst. that can be taken offline at the same time during the update
+    max_unavailable = 1
+    # max_creating = 2
+    // --//-- that can be temporarily allocated above the group size during the update
+    max_expansion = 1
+    # max_deleting = 2
+  }
+  allocation_policy {
+    zones = ["ru-central1-a"]
+  }
+  // https://terraform-provider.yandexcloud.net/Resources/compute_instance
+  instance_template {
+    // Requires 'compute.editor' role https://cloud.yandex.ru/docs/compute/security
+    // Requires 'iam.serviceAccounts.admin' role
+    // https://cloud.yandex.com/en/docs/compute/concepts/vm-platforms
+    platform_id        = "standard-v2"  // Intel Cascade Lake
+    // ID of the service account authorized for this instance = catgpt-sa
     service_account_id = yandex_iam_service_account.service-accounts["catgpt-sa"].id
     resources {
       cores         = 2
-      memory        = 1
-      core_fraction = 5
+      memory        = 1 # Gb
+      // Гарантированная доля CPU: доля может временно повышаться, но не будет меньше
+      core_fraction = 5 # %
     }
     scheduling_policy {
+      // Прерываемая ВМ работает не более 24 часов и может быть автоматически
+      // остановлена. Все данные сохраняются, возможен перезапуск вручную.
       preemptible = true
     }
     network_interface {
-      subnet_id = "${yandex_vpc_subnet.foo.id}"
+      // 'subnet_id' in a single yandex_compute_instance
+      subnet_ids = ["${yandex_vpc_subnet.foo.id}"]
       nat = true
     }
     boot_disk {
@@ -71,10 +128,18 @@ resource "yandex_compute_instance" "catgpt-1" {
         image_id = data.yandex_compute_image.coi.id
       }
     }
+    // https://cloud.yandex.ru/docs/compute/concepts/vm-metadata
     metadata = {
-      docker-compose = file("${path.module}/docker-compose.yaml")
-      ssh-keys  = "ubuntu:${file("~/.ssh/devops_training.pub")}"
+      user-data = "${file("cloud-config.yaml")}"
+      docker-compose = templatefile("${path.module}/docker-compose.yaml", {
+        registry_id = yandex_container_registry.registry1.id,
+        folder_id = var.folder_id
+      })
+      // Для доступа к ВМ через SSH сгенерируйте пару SSH-ключей и передайте
+      // публичную часть ключа на ВМ в параметре ssh-keys блока metadata.
+      // https://cloud.yandex.ru/docs/compute/operations/vm-connect/ssh#creating-ssh-keys
+      // Пользователь ВМ Container Optimized Image - ubuntu. Можно указать любого другого?
+      ssh-keys  = "ubuntu:${file("./ssh_key.pub")}"
     }
+  }
 }
-
-
