@@ -22,3 +22,7 @@ go.work
 .terraform
 terraform/authorized_key.json
 ssh_key*
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.tfstate.lock.info
+terraform/yc.tfvars
