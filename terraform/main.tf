@@ -35,11 +35,19 @@ variable "folder_id" {
 
 locals {
   service-accounts = toset([
-    "catgpt-sa",
+    "catgpt-sa", "catgpt-ig-sa"
   ])
   catgpt-sa-roles = toset([
     "container-registry.images.puller",
     "monitoring.editor",
+  ])
+  catgpt-ig-sa-roles = toset([
+    "compute.editor",
+    "iam.serviceAccounts.user",
+    # "load-balancer.admin",
+    "vpc.publicAdmin",  // Permission denied to resource-manager.folder
+    "vpc.user", // "Permission to use subnet denied"
+    # "vpc.privateAdmin",
   ])
 }
 resource "yandex_iam_service_account" "service-accounts" {
@@ -55,13 +63,42 @@ resource "yandex_resourcemanager_folder_iam_member" "catgpt-roles" {
   member    = "serviceAccount:${yandex_iam_service_account.service-accounts["catgpt-sa"].id}"
   role      = each.key
 }
+resource "yandex_resourcemanager_folder_iam_member" "catgpt-ig-roles" {
+  for_each  = local.catgpt-ig-sa-roles
+  folder_id = var.folder_id
+  member    = "serviceAccount:${yandex_iam_service_account.service-accounts["catgpt-ig-sa"].id}"
+  role      = each.key
+}
 
 // https://cloud.yandex.com/en/docs/cos/tutorials/coi-with-terraform
 data "yandex_compute_image" "coi" {
   family = "container-optimized-image"
 }
-// https://terraform-provider.yandexcloud.net/Resources/compute_instance
-resource "yandex_compute_instance" "catgpt-1" {
+
+// https://cloud.yandex.com/en/docs/cos/tutorials/coi-with-terraform#creating-group
+resource "yandex_compute_instance_group" "catgpt" {
+  depends_on = [ yandex_resourcemanager_folder_iam_member.catgpt-ig-roles ]
+  folder_id = var.folder_id
+  // ID of the service account authorized for this instance = catgpt-sa
+  service_account_id = yandex_iam_service_account.service-accounts["catgpt-ig-sa"].id
+  scale_policy {
+    fixed_scale {
+      size = 2 // The number of instances in the instance group
+    }
+  }
+  deploy_policy {
+    // max num. of inst. that can be taken offline at the same time during the update
+    max_unavailable = 1
+    # max_creating = 2
+    // --//-- that can be temporarily allocated above the group size during the update
+    max_expansion = 1
+    # max_deleting = 2
+  }
+  allocation_policy {
+    zones = ["ru-central1-a"]
+  }
+  // https://terraform-provider.yandexcloud.net/Resources/compute_instance
+  instance_template {
     // Requires 'compute.editor' role https://cloud.yandex.ru/docs/compute/security
     // Requires 'iam.serviceAccounts.admin' role
     // https://cloud.yandex.com/en/docs/compute/concepts/vm-platforms
@@ -80,7 +117,8 @@ resource "yandex_compute_instance" "catgpt-1" {
       preemptible = true
     }
     network_interface {
-      subnet_id = "${yandex_vpc_subnet.foo.id}"
+      // 'subnet_id' in a single yandex_compute_instance
+      subnet_ids = ["${yandex_vpc_subnet.foo.id}"]
       nat = true
     }
     boot_disk {
@@ -103,6 +141,5 @@ resource "yandex_compute_instance" "catgpt-1" {
       // Пользователь ВМ Container Optimized Image - ubuntu. Можно указать любого другого?
       ssh-keys  = "ubuntu:${file("./ssh_key.pub")}"
     }
+  }
 }
-
-
