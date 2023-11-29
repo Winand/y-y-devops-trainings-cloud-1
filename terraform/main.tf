@@ -44,7 +44,7 @@ locals {
   catgpt-ig-sa-roles = toset([
     "compute.editor",
     "iam.serviceAccounts.user",
-    # "load-balancer.admin",
+    "load-balancer.admin", // create load balancer
     "vpc.publicAdmin",  // Permission denied to resource-manager.folder
     "vpc.user", // "Permission to use subnet denied"
     # "vpc.privateAdmin",
@@ -97,6 +97,10 @@ resource "yandex_compute_instance_group" "catgpt" {
   allocation_policy {
     zones = ["ru-central1-a"]
   }
+  load_balancer {
+    # target_group_name        = "target-group" // The name of the target group
+    # target_group_description = "load balancer target group" // A description
+  }
   // https://terraform-provider.yandexcloud.net/Resources/compute_instance
   instance_template {
     // Requires 'compute.editor' role https://cloud.yandex.ru/docs/compute/security
@@ -140,6 +144,34 @@ resource "yandex_compute_instance_group" "catgpt" {
       // https://cloud.yandex.ru/docs/compute/operations/vm-connect/ssh#creating-ssh-keys
       // Пользователь ВМ Container Optimized Image - ubuntu. Можно указать любого другого?
       ssh-keys  = "ubuntu:${file("./ssh_key.pub")}"
+    }
+  }
+}
+
+// https://cloud.yandex.com/en/docs/compute/operations/instance-groups/create-with-balancer
+// https://cloud.yandex.ru/docs/network-load-balancer/operations/load-balancer-create
+resource "yandex_lb_network_load_balancer" "lb-1" {
+  // Requires 'load-balancer.admin' role https://cloud.yandex.ru/docs/network-load-balancer/security
+  name = "network-load-balancer-1"
+
+  listener {
+    name = "network-load-balancer-1-listener"
+    port = 80
+    target_port = 8080 // Port of a target. The default is the same as listener's port.
+    external_address_spec {
+      ip_version = "ipv4"
+    }
+  }
+
+  attached_target_group {
+    target_group_id = yandex_compute_instance_group.catgpt.load_balancer.0.target_group_id
+
+    healthcheck {
+      name = "http"
+      http_options {
+        port = 8080
+        path = "/ping"
+      }
     }
   }
 }
